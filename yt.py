@@ -1,133 +1,202 @@
 
+from flask import Flask, request, render_template_string
+import openai
+from gtts import gTTS
+import subprocess
 import os
-import random
-import pytube
-import cv2
-import numpy as np
-import ffmpeg
-import whisper
-import sqlite3
-from datetime import datetime
-from flask import Flask, request, send_from_directory, render_template, redirect, url_for
 
-# Flask app for public link generation
-app = Flask(__name__, template_folder='templates')
+app = Flask(__name__)
 
-# SQLite database initialization
-DB_PATH = "videos.db"
+# OpenAI API Key
+OPENAI_API_KEY = "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"
+openai.api_key = OPENAI_API_KEY
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS videos (
-            id INTEGER PRIMARY KEY,
-            url TEXT,
-            file_path TEXT,
-            download_link TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# Step 1: Generate Scenes
+def generate_scenes(story):
+    prompt = f"""
+    Analyze this story and break it into scenes with detailed background, characters, and actions:
+    {story}
+    """
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        max_tokens=500
+    )
+    scenes = response.choices[0].text.strip()
+    return scenes
 
-# Video download karna
-def download_video(url, path='./downloads'):
-    yt = pytube.YouTube(url)
-    video_stream = yt.streams.filter(progressive=True, file_extension='mp4').get_highest_resolution()
-    print(f"Downloading: {yt.title}")
-    video_stream.download(output_path=path)
-    return os.path.join(path, video_stream.default_filename)
+# Step 2: Generate Characters
+def generate_characters(scene_description):
+    prompt = f"""
+    Analyze this scene: {scene_description}.
+    Provide a detailed list of characters involved, their physical appearance, personality traits, and role in the scene.
+    """
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        max_tokens=300
+    )
+    return response.choices[0].text.strip()
 
-# Whisper se subtitles generate karna
-def generate_subtitles(video_path):
-    model = whisper.load_model("base")
-    result = model.transcribe(video_path)
-    subtitles = []
-    for segment in result['segments']:
-        subtitles.append(f"{segment['start']} --> {segment['end']}\n{segment['text']}\n")
-    return subtitles
+# Step 3: Generate Voice
+def generate_voice(dialogue, output_file):
+    tts = gTTS(dialogue)
+    tts.save(output_file)
+    print(f"[INFO] Voice generated: {output_file}")
 
-# Highlights extraction
-def extract_highlights(video_path):
-    video = cv2.VideoCapture(video_path)
-    highlights = []
-    prev_frame = None
+# Step 4: Dummy Background Music
+def generate_background_music():
+    print("[INFO] Adding dummy background music...")
+    return "dummy_music.mp3"  # Placeholder for actual music file
 
-    while True:
-        ret, frame = video.read()
-        if not ret:
-            break
-        if prev_frame is not None:
-            diff = cv2.absdiff(frame, prev_frame)
-            non_zero_count = np.count_nonzero(diff)
-            if non_zero_count > 10000:
-                highlights.append(frame)
-        prev_frame = frame
-    video.release()
-    return highlights
-
-# Create final video
-def create_final_video(video_path, output_path='./downloads'):
-    output_file = os.path.join(output_path, f"final_video_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4")
-    os.system(f"ffmpeg -i {video_path} -t 00:01:00 -c:v copy -c:a copy {output_file}")
+# Step 5: Compile Final Video
+def compile_video(video_files, output_file):
+    with open("file_list.txt", "w") as f:
+        for file in video_files:
+            f.write(f"file '{file}'\n")
+    subprocess.run(["ffmpeg", "-f", "concat", "-safe", "0", "-i", "file_list.txt", "-c", "copy", output_file])
+    print(f"[INFO] Final video saved as {output_file}")
     return output_file
 
-# Save video details in database
-def save_to_db(url, file_path, download_link):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO videos (url, file_path, download_link)
-        VALUES (?, ?, ?)
-    ''', (url, file_path, download_link))
-    conn.commit()
-    conn.close()
-
-# Generate public download link (Flask server)
-@app.route('/download/<filename>', methods=['GET'])
-def download_file(filename):
-    return send_from_directory(directory='./downloads', path=filename, as_attachment=True)
-
-# Homepage with form
-@app.route('/', methods=['GET', 'POST'])
+# Flask Routes
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'POST':
-        url = request.form['url']
-        return redirect(url_for('process_video', url=url))
-    return render_template('index.html')
+    if request.method == "POST":
+        story = request.form["story"]
 
-# Video processing route
-@app.route('/process', methods=['GET'])
-def process_video():
-    url = request.args.get('url')
-    if not url:
-        return redirect(url_for('index'))
+        # Generate scenes
+        scenes = generate_scenes(story)
+        video_files = []
+        characters = []
 
-    download_folder = './downloads'
-    os.makedirs(download_folder, exist_ok=True)
+        # Process scenes
+        for i, scene in enumerate(scenes.split('\n'), start=1):
+            # Generate characters
+            char_details = generate_characters(scene)
+            characters.append(f"Scene {i} Characters:\n{char_details}")
 
-    # Video download
-    video_path = download_video(url, path=download_folder)
+            # Generate voice for scene
+            dialogue = f"Scene {i}: {scene}"
+            voice_file = f"scene_{i}_voice.mp3"
+            generate_voice(dialogue, voice_file)
 
-    # Subtitles generate
-    generate_subtitles(video_path)
+            # Simulate video creation (placeholder)
+            video_file = f"scene_{i}.mp4"
+            with open(video_file, "w") as f:  # Dummy video file
+                f.write(f"Video content for {scene}")
+            video_files.append(video_file)
 
-    # Highlights nikaalna
-    extract_highlights(video_path)
+        # Compile final video
+        final_video = compile_video(video_files, "final_video.mp4")
+        music_file = generate_background_music()
 
-    # Final video creation
-    final_video_path = create_final_video(video_path, output_path=download_folder)
+        # Dummy video with music output
+        final_video_with_music = "final_video_with_music.mp4"
 
-    # Generate public download link
-    file_name = os.path.basename(final_video_path)
-    public_link = f"http://127.0.0.1:5000/download/{file_name}"
+        # Render the result page
+        return render_template_string(COLORFUL_HTML, video_path=final_video_with_music, characters=characters)
+    return render_template_string(COLORFUL_HTML)
 
-    # Save to database
-    save_to_db(url, final_video_path, public_link)
-
-    return render_template('result.html', link=public_link)
+# Colorful HTML
+COLORFUL_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Story to Video Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(to right, #ff9a9e, #fad0c4);
+            color: #333;
+            text-align: center;
+            padding: 20px;
+        }
+        h1 {
+            color: #fff;
+            text-shadow: 2px 2px 4px #000;
+        }
+        textarea {
+            width: 80%;
+            height: 200px;
+            margin: 20px auto;
+            padding: 10px;
+            font-size: 16px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        video {
+            margin-top: 20px;
+            border: 5px solid #fff;
+            border-radius: 10px;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+            text-align: left;
+            display: inline-block;
+        }
+        ul li {
+            background: #fff;
+            margin: 5px 0;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            text-decoration: none;
+            color: #fff;
+            background: #007BFF;
+            padding: 10px 20px;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        a:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Story to 3D HD Video Generator</h1>
+    <form method="POST">
+        <textarea name="story" placeholder="Enter your story here..."></textarea>
+        <br>
+        <button type="submit">Generate Video</button>
+    </form>
+    {% if video_path %}
+    <h2>Your Video is Ready!</h2>
+    <video width="640" height="360" controls>
+        <source src="{{ video_path }}" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+    <br>
+    <a href="{{ video_path }}" download>Download Video</a>
+    <h2>Generated Characters</h2>
+    <ul>
+        {% for char in characters %}
+        <li>{{ char }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</body>
+</html>
+"""
 
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=True)
