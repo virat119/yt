@@ -4,3 +4,6 @@ openai-whisper
 opencv-python
 numpy
 ffmpeg-python
+Flask==2.2.3
+openai==0.27.8
+gtts==2.3.2
